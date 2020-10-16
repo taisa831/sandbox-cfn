@@ -4,6 +4,19 @@ Parameters:
   Prefix:
     Type: String
     Default: example
+  DBName:
+    Type: String
+    Default: example
+  DBUsername:
+    Type: String
+    Default: user
+  DBPassword:
+    Type: String
+    Default: password
+  KeyPair:
+    Description: KeyPair Name
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: "my-key"
 
 Resources:
   VPC:
@@ -13,6 +26,8 @@ Resources:
       Tags:
         - Key: "Name"
           Value: !Sub "${Prefix}-vpc"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
   PublicSubnet:
     Type: "AWS::EC2::Subnet"
     Properties:
@@ -61,25 +76,116 @@ Resources:
       RouteTableId: !Ref "PublicRouteTable"
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref "InternetGateway"
-#  NAT:
-#    Type: AWS::EC2::NatGateway
-#    Properties:
-#      AllocationId:
-#        Fn::GetAtt:
-#          - EIP
-#          - AllocationId
-#      SubnetId: !Ref PublicSubnet
-#      Tags:
-#        - Key: foo
-#          Value: bar
-#  EIP:
-#    DependsOn: InternetGatewayAttachment
-#    Type: AWS::EC2::EIP
-#    Properties:
-#      Domain: vpc
-#  PrivateRoute:
-#    Type: AWS::EC2::Route
-#    Properties:
-#      RouteTableId: !Ref PublicRouteTable
-#      DestinationCidrBlock: 0.0.0.0/0
-#      NatGatewayId: !Ref NAT
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${Prefix}-web-security-group"
+      GroupDescription: WebSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Prefix}-web-security-group"
+      VpcId: !Ref VPC
+  WebNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref "PublicSubnet"
+      PrivateIpAddress: "10.0.1.10"
+  WebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-034dad9bdb65ec34b
+      InstanceType: t2.micro
+      KeyName: !Ref "KeyPair"
+      SecurityGroupIds:
+        - !Ref "WebSecurityGroup"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Prefix}-web-server"
+      BlockDeviceMappings:
+        - DeviceName: "/dev/xvda"
+          Ebs:
+            VolumeType: "gp2"
+            VolumeSize: 8
+      SubnetId: !Ref "PublicSubnet"
+      UserData:
+        Fn::Base64: |-
+          #!/bin/bash
+          sudo yum install -y go
+          sudo yum -y install mysql
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${Prefix}-db-security-group"
+      GroupDescription: DBSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "10.0.1.0/24"
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: "10.0.1.0/24"
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Prefix}-db-security-group"
+      VpcId: !Ref VPC
+  DBInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-034dad9bdb65ec34b
+      InstanceType: t2.micro
+      KeyName: !Ref "KeyPair"
+      SecurityGroupIds:
+        - !Ref DBSecurityGroup
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Prefix}-db-server"
+      BlockDeviceMappings:
+        - DeviceName: "/dev/xvda"
+          Ebs:
+            VolumeType: "gp2"
+            VolumeSize: 8
+      SubnetId: !Ref PrivateSubnet
+      UserData:
+        Fn::Base64: |-
+          #!/bin/bash
+          sudo yum install -y mysql-server
+          sudo service mysqld start
+          sudo chkconfig mysqld on
+  WebEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref WebInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${Prefix}-web-eip"
+#      NetworkInterfaces:
+#        - DeviceIndex: "0"
+#          NetworkInterfaceId: !Ref WebNetworkInterface
+  NAT:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+          - EIP
+          - AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: NatGateway
+  EIP:
+    DependsOn: InternetGatewayAttachment
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
