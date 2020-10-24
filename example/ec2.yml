@@ -17,10 +17,9 @@ Parameters:
     Description: KeyPair Name
     Type: AWS::EC2::KeyPair::KeyName
     Default: "my-key"
-
 Resources:
   VPC:
-    Type: "AWS::EC2::VPC"
+    Type: AWS::EC2::VPC
     Properties:
       CidrBlock: "10.0.0.0/16"
       Tags:
@@ -29,53 +28,53 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
   PublicSubnet:
-    Type: "AWS::EC2::Subnet"
+    Type: AWS::EC2::Subnet
     Properties:
       CidrBlock: "10.0.1.0/24"
       AvailabilityZone: "ap-northeast-1a"
-      VpcId: !Ref "VPC"
+      VpcId: !Ref VPC
       Tags:
         - Key: "Name"
           Value: !Sub "${Prefix}-public-subnet"
   PrivateSubnet:
-    Type: "AWS::EC2::Subnet"
+    Type: AWS::EC2::Subnet
     Properties:
       CidrBlock: "10.0.2.0/24"
       AvailabilityZone: "ap-northeast-1c"
-      VpcId: !Ref "VPC"
+      VpcId: !Ref VPC
       Tags:
         - Key: "Name"
           Value: !Sub "${Prefix}-private-subnet"
   InternetGateway:
-    Type: "AWS::EC2::InternetGateway"
+    Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
           Value: !Sub "${Prefix}-internet-gateway"
   InternetGatewayAttachment:
-    Type: "AWS::EC2::VPCGatewayAttachment"
+    Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref "VPC"
-      InternetGatewayId: !Ref "InternetGateway"
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
   PublicRouteTable:
-    Type: "AWS::EC2::RouteTable"
+    Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref "VPC"
+      VpcId: !Ref VPC
       Tags:
         - Key: "Name"
           Value: !Sub "${Prefix}-public-route-table"
-  SubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref "PublicRouteTable"
-      SubnetId: !Ref "PublicSubnet"
   PublicRoute:
     Type: AWS::EC2::Route
     DependsOn: InternetGatewayAttachment
     Properties:
-      RouteTableId: !Ref "PublicRouteTable"
+      RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref "InternetGateway"
+      GatewayId: !Ref InternetGateway
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -94,19 +93,33 @@ Resources:
         - Key: "Name"
           Value: !Sub "${Prefix}-web-security-group"
       VpcId: !Ref VPC
-  WebNetworkInterface:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      SubnetId: !Ref "PublicSubnet"
-      PrivateIpAddress: "10.0.1.10"
   WebInstance:
     Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              nginx: []
+              mysql: []
+              golang: []
+          sources:
+            /var/www/html: "https://github.com/taisa831/sandbox-docker-compose-go-mysql/tree/master"
+          services:
+            sysvinit:
+              nginx:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - "/etc/nginx/nginx.conf"
+                sources:
+                  - "/var/www/html"
     Properties:
       ImageId: ami-034dad9bdb65ec34b
       InstanceType: t2.micro
-      KeyName: !Ref "KeyPair"
+      KeyName: !Ref KeyPair
       SecurityGroupIds:
-        - !Ref "WebSecurityGroup"
+        - !Ref WebSecurityGroup
       Tags:
         - Key: "Name"
           Value: !Sub "${Prefix}-web-server"
@@ -115,13 +128,13 @@ Resources:
           Ebs:
             VolumeType: "gp2"
             VolumeSize: 8
-      SubnetId: !Ref "PublicSubnet"
+      SubnetId: !Ref PublicSubnet
       UserData:
-        Fn::Base64: |-
+        Fn::Base64: !Sub |
           #!/bin/bash
-          sudo yum install -y go
-          sudo yum -y install mysql
-
+          yum -y update
+          yum -y install cfn-bootstrap
+          /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource WebInstance --region ${AWS::Region}
   DBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -142,10 +155,33 @@ Resources:
       VpcId: !Ref VPC
   DBInstance:
     Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              mysql-server: []
+          commands:
+            01mysql:
+              command: "mysql -uroot < /tmp/setup.mysql"
+          services:
+            sysvinit:
+              mysqld:
+                enabled: "true"
+                ensureRunning: "true"
+          files:
+            /tmp/setup.mysql:
+              content: !Sub |
+                CREATE DATABASE example default character set utf8 collate utf8_general_ci;
+                GRANT ALL ON example.* TO user@'%' identified by 'password';
+                FLUSH PRIVILEGES;
+              mode: "000644"
+              owner: "root"
+              group: "root"
     Properties:
       ImageId: ami-034dad9bdb65ec34b
       InstanceType: t2.micro
-      KeyName: !Ref "KeyPair"
+      KeyName: !Ref KeyPair
       SecurityGroupIds:
         - !Ref DBSecurityGroup
       Tags:
@@ -158,11 +194,11 @@ Resources:
             VolumeSize: 8
       SubnetId: !Ref PrivateSubnet
       UserData:
-        Fn::Base64: |-
+        Fn::Base64: !Sub |
           #!/bin/bash
-          sudo yum install -y mysql-server
-          sudo service mysqld start
-          sudo chkconfig mysqld on
+          yum -y update
+          yum -y install cfn-bootstrap
+          /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource DBInstance --region ${AWS::Region}
   WebEIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -170,9 +206,6 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${Prefix}-web-eip"
-#      NetworkInterfaces:
-#        - DeviceIndex: "0"
-#          NetworkInterfaceId: !Ref WebNetworkInterface
   NAT:
     Type: AWS::EC2::NatGateway
     Properties:
@@ -183,9 +216,27 @@ Resources:
       SubnetId: !Ref PublicSubnet
       Tags:
         - Key: Name
-          Value: NatGateway
+          Value: !Sub "${Prefix}-nat-gateway"
   EIP:
     DependsOn: InternetGatewayAttachment
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: "Name"
+          Value: !Sub "${Prefix}-private-route-table"
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NAT
+  SubnetPrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
